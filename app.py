@@ -6,17 +6,13 @@ import sqlite3
 
 
 app = Flask(__name__)
-
 DB_NAME = "delivery.db"
+COURIER_TYPES = ("foot", "bike", "car")
 COURIER_TYPES_CAPACITY = {"foot": 10, "bike": 15, "car": 50}
 COURIER_TYPES_COEFFICIENT = {"foot": 2, "bike": 5, "car": 9}
-MIN_WEIGHT = 0.01
-MAX_WEIGHT = 50
+ORDER_MIN_WEIGHT = 0.01
+ORDER_MAX_WEIGHT = 50
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def courier_type_is_valid(courier_type):
-    return courier_type in ("foot", "bike", "car")
 
 
 def hours_are_valid(intervals):
@@ -49,20 +45,22 @@ def intervals_intersect(interval_1, interval_2):
     return start_1 <= start_2 <= end_1 or start_1 <= end_2 <= end_1
 
 
-def get_courier_info(courier_id):
+def get_courier_dictionary(courier_id):
     courier = {"courier_id": courier_id}
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT COURIER_TYPE FROM COURIERS WHERE COURIER_ID = {courier_id}")
-    row = cursor.fetchone()
+    c = conn.cursor()
+    c.execute(f"SELECT type FROM couriers WHERE id = {courier_id}")
+    row = c.fetchone()
     if row is None:
         conn.close()
         return False
     courier["courier_type"] = row[0]
-    cursor.execute(f"SELECT REGION FROM REGIONS WHERE COURIER_ID = {courier_id}")
-    courier["regions"] = [row[0] for row in cursor.fetchall()]
-    cursor.execute(f"SELECT HOURS FROM WORKING_HOURS WHERE COURIER_ID = {courier_id}")
-    courier["working_hours"] = [row[0] for row in cursor.fetchall()]
+    c.execute(f"SELECT region FROM regions WHERE courier_id = {courier_id}")
+    courier["regions"] = [row[0] for row in c.fetchall()]
+    c.execute(f"""SELECT interval
+                  FROM working_hours
+                  WHERE courier_id = {courier_id}""")
+    courier["working_hours"] = [row[0] for row in c.fetchall()]
     conn.close()
     return courier
 
@@ -70,9 +68,9 @@ def get_courier_info(courier_id):
 @app.route("/couriers", methods=["POST"])
 def import_couriers():
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COURIER_ID FROM COURIERS")
-    existing_couriers = [row[0] for row in cursor.fetchall()]
+    c = conn.cursor()
+    c.execute("SELECT id FROM couriers")
+    existing_couriers = [row[0] for row in c.fetchall()]
     conn.close()
 
     valid_couriers = []
@@ -81,7 +79,7 @@ def import_couriers():
     for courier in request.json["data"]:
         if (set(courier.keys()) == set(fields) and
            courier["courier_id"] not in existing_couriers and
-           courier_type_is_valid(courier["courier_type"]) and
+           courier["courier_type"] in COURIER_TYPES and
            hours_are_valid(courier["working_hours"]) and
            regions_are_valid(courier["regions"])):
             valid_couriers.append({"id": courier["courier_id"]})
@@ -92,24 +90,25 @@ def import_couriers():
         return jsonify(
             {"validation_error": {"couriers": invalid_couriers}}), 400
 
-    query_couriers = "INSERT INTO COURIERS (COURIER_ID, COURIER_TYPE) VALUES "
-    query_regions = "INSERT INTO REGIONS (COURIER_ID, REGION) VALUES "
-    query_working_hours = "INSERT INTO WORKING_HOURS (COURIER_ID, HOURS) VALUES "
+    query_couriers = "INSERT INTO couriers (id, type) VALUES "
+    query_regions = "INSERT INTO regions (courier_id, region) VALUES "
+    query_hours = "INSERT INTO working_hours (courier_id, interval) VALUES "
     for courier in request.json["data"]:
-        query_couriers += f'({courier["courier_id"]}, "{courier["courier_type"]}"), '
+        query_couriers += (f'({courier["courier_id"]}, '
+                           f'"{courier["courier_type"]}"), ')
         for region in courier["regions"]:
             query_regions += f'({courier["courier_id"]}, {region}), '
         for interval in courier["working_hours"]:
-            query_working_hours += f'({courier["courier_id"]}, "{interval}"), '
+            query_hours += f'({courier["courier_id"]}, "{interval}"), '
     query_couriers = query_couriers[:-2] + ";"
     query_regions = query_regions[:-2] + ";"
-    query_working_hours = query_working_hours[:-2] + ";"
+    query_hours = query_hours[:-2] + ";"
 
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(query_couriers)
-    cursor.execute(query_regions)
-    cursor.execute(query_working_hours)
+    c = conn.cursor()
+    c.execute(query_couriers)
+    c.execute(query_regions)
+    c.execute(query_hours)
     conn.commit()
     conn.close()
 
@@ -118,7 +117,7 @@ def import_couriers():
 
 @app.route('/couriers/<int:courier_id>', methods=['PATCH'])
 def update_courier(courier_id):
-    courier = get_courier_info(courier_id)
+    courier = get_courier_dictionary(courier_id)
     if not courier:
         abort(404)
     courier_type = courier["courier_type"]
@@ -134,7 +133,7 @@ def update_courier(courier_id):
             abort(400)
     if "courier_type" in request.json:
         courier_type = request.json["courier_type"]
-        if not courier_type_is_valid(courier_type):
+        if courier_type not in COURIER_TYPES:
             abort(400)
     if "working_hours" in request.json:
         working_hours = request.json["working_hours"]
@@ -142,38 +141,37 @@ def update_courier(courier_id):
             abort(400)
 
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    c = conn.cursor()
     if "regions" in request.json:
-        cursor.execute(f"DELETE FROM REGIONS WHERE COURIER_ID = {courier_id}")
-        query = "INSERT INTO REGIONS (COURIER_ID, REGION) VALUES "
+        c.execute(f"DELETE FROM regions WHERE courier_id = {courier_id}")
+        query = "INSERT INTO regions (courier_id, region) VALUES "
         for region in regions:
             query += f"({courier_id}, {region}), "
         query = query[:-2] + ";"
-        cursor.execute(query)
+        c.execute(query)
     if "working_hours" in request.json:
-        cursor.execute(f"DELETE FROM WORKING_HOURS WHERE COURIER_ID = {courier_id}")
-        query = "INSERT INTO WORKING_HOURS (COURIER_ID, HOURS) VALUES "
+        c.execute(f"DELETE FROM working_hours WHERE courier_id = {courier_id}")
+        query = "INSERT INTO working_hours (courier_id, interval) VALUES "
         for interval in working_hours:
             query += f'({courier_id}, "{interval}"), '
         query = query[:-2] + ";"
-        cursor.execute(query)
+        c.execute(query)
     if "courier_type" in request.json:
-        cursor.execute(f"""
-            UPDATE COURIERS
-            SET COURIER_TYPE = "{courier_type}"
-            WHERE COURIER_ID = {courier_id}""")
+        c.execute(f"""UPDATE couriers
+                      SET type = "{courier_type}"
+                      WHERE id = {courier_id}""")
     conn.commit()
 
     capacity = COURIER_TYPES_CAPACITY[courier_type]
     orders_to_reassign = []
-    cursor.execute(f"""
-        SELECT ORDERS.ORDER_ID, WEIGHT, REGION, HOURS
-        FROM ORDERS
-        INNER JOIN DELIVERY_HOURS ON ORDERS.ORDER_ID = DELIVERY_HOURS.ORDER_ID
-        WHERE COURIER_ID = {courier_id}
-        AND COMPLETE_TIME IS NULL
-        ORDER BY WEIGHT""")
-    for row in cursor.fetchall():
+    c.execute(f"""SELECT
+                    orders.id, weight, region, interval
+                  FROM orders
+                  JOIN delivery_hours
+                    ON orders.id = delivery_hours.order_id
+                  WHERE courier_id = {courier_id} AND completed_at IS NULL
+                  ORDER BY weight""")
+    for row in c.fetchall():
         order_id, weight, region, delivery_interval = row
         if region not in regions or capacity < weight:
             orders_to_reassign.append(order_id)
@@ -184,22 +182,24 @@ def update_courier(courier_id):
                 break
         else:
             orders_to_reassign.append(order_id)
-    cursor.execute(f"""
-        UPDATE ORDERS
-        SET COURIER_ID = NULL
-        WHERE ORDER_ID IN ({', '.join(map(str, orders_to_reassign))})""")
+    c.execute(f"""UPDATE orders
+                  SET courier_id = NULL
+                  WHERE id IN ({', '.join(map(str, orders_to_reassign))})""")
     conn.commit()
     conn.close()
 
+    courier["courier_type"] = courier_type
+    courier["regions"] = regions
+    courier["working_hours"] = working_hours
     return jsonify(courier)
 
 
 @app.route("/orders", methods=["POST"])
 def import_orders():
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT ORDER_ID FROM ORDERS")
-    existing_orders = [row[0] for row in cursor.fetchall()]
+    c = conn.cursor()
+    c.execute("SELECT id FROM orders")
+    existing_orders = [row[0] for row in c.fetchall()]
     conn.close()
 
     valid_orders = []
@@ -209,9 +209,9 @@ def import_orders():
         if (set(order.keys()) == set(fields) and
            order["order_id"] not in existing_orders and
            isinstance(order["weight"], (int, float)) and
-           MIN_WEIGHT <= order["weight"] <= MAX_WEIGHT and
-           isinstance(order["region"], int) and order["region"] > 0 and
-           hours_are_valid(order["delivery_hours"])):
+           ORDER_MIN_WEIGHT <= order["weight"] <= ORDER_MAX_WEIGHT and
+           hours_are_valid(order["delivery_hours"]) and
+           regions_are_valid([order["region"]])):
             valid_orders.append({"id": order["order_id"]})
         else:
             invalid_orders.append({"id": order["order_id"]})
@@ -219,19 +219,20 @@ def import_orders():
     if len(invalid_orders) != 0:
         return jsonify({"validation_error": {"orders": invalid_orders}}), 400
 
-    query_orders = "INSERT INTO ORDERS (ORDER_ID, WEIGHT, REGION) VALUES "
-    query_delivery_hours = "INSERT INTO DELIVERY_HOURS (ORDER_ID, HOURS) VALUES "
+    query_orders = "INSERT INTO orders (id, weight, region) VALUES "
+    query_hours = "INSERT INTO delivery_hours (order_id, interval) VALUES "
     for order in request.json["data"]:
-        query_orders += f'({order["order_id"]}, {order["weight"]}, {order["region"]}), '
+        query_orders += (f'({order["order_id"]}, {order["weight"]}, '
+                         f'{order["region"]}), ')
         for interval in order["delivery_hours"]:
-            query_delivery_hours += f'({order["order_id"]}, "{interval}"), '
+            query_hours += f'({order["order_id"]}, "{interval}"), '
     query_orders = query_orders[:-2] + ";"
-    query_delivery_hours = query_delivery_hours[:-2] + ";"
+    query_hours = query_hours[:-2] + ";"
 
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(query_orders)
-    cursor.execute(query_delivery_hours)
+    c = conn.cursor()
+    c.execute(query_orders)
+    c.execute(query_hours)
     conn.commit()
     conn.close()
 
@@ -242,10 +243,11 @@ def import_orders():
 def assign_orders():
     courier_id = request.json["courier_id"]
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(f"""SELECT COURIER_TYPE, ASSIGN_TIME
-                       FROM COURIERS WHERE COURIER_ID = {courier_id}""")
-    row = cursor.fetchone()
+    c = conn.cursor()
+    c.execute(f"""SELECT type, orders_assigned_at
+                  FROM couriers
+                  WHERE id = {courier_id}""")
+    row = c.fetchone()
     if row is None:
         conn.close()
         abort(400)
@@ -253,31 +255,31 @@ def assign_orders():
     assigned_orders = []
     capacity = COURIER_TYPES_CAPACITY[courier_type]
 
-    cursor.execute(f"""
-        SELECT ORDER_ID, WEIGHT
-        FROM ORDERS
-        WHERE COURIER_ID = {courier_id}""")
-    for row in cursor.fetchall():
+    c.execute(f"""SELECT id, weight
+                  FROM orders
+                  WHERE courier_id = {courier_id}""")
+    for row in c.fetchall():
         order_id, weight = row
         assigned_orders.append({"id": order_id})
         capacity -= weight
 
     new_orders_ids = []
-    cursor.execute(f"SELECT HOURS FROM WORKING_HOURS WHERE COURIER_ID = {courier_id}")
-    working_hours = [row[0] for row in cursor.fetchall()]
-    cursor.execute(f"""
-        SELECT
-            ORDERS.ORDER_ID, WEIGHT, DELIVERY_HOURS.HOURS
-        FROM
-            ORDERS, COURIERS
-            INNER JOIN REGIONS ON COURIERS.COURIER_ID = REGIONS.COURIER_ID AND
-                                ORDERS.REGION = REGIONS.REGION
-            INNER JOIN DELIVERY_HOURS ON ORDERS.ORDER_ID = DELIVERY_HOURS.ORDER_ID
-        WHERE
-            COURIERS.COURIER_ID = {courier_id} AND ORDERS.COURIER_ID IS NULL
-        ORDER BY
-            WEIGHT, ORDERS.ORDER_ID""")
-    for row in cursor.fetchall():
+    c.execute(f"""SELECT interval
+                  FROM working_hours
+                  WHERE courier_id = {courier_id}""")
+    working_hours = [row[0] for row in c.fetchall()]
+    c.execute(f"""SELECT
+                    orders.id, weight, delivery_hours.interval
+                  FROM orders, couriers
+                  JOIN regions
+                    ON couriers.id = regions.courier_id
+                    AND orders.region = regions.region
+                  JOIN delivery_hours
+                    ON orders.id = delivery_hours.order_id
+                  WHERE
+                    couriers.id = {courier_id} AND orders.courier_id IS NULL
+                  ORDER BY weight, orders.id""")
+    for row in c.fetchall():
         order_id, weight, delivery_interval = row
         if {"id": order_id} in assigned_orders:
             continue
@@ -291,14 +293,12 @@ def assign_orders():
                 break
     if new_orders_ids != []:
         assign_time = datetime.utcnow().strftime(TIME_FORMAT)
-        cursor.execute(f"""
-            UPDATE COURIERS
-            SET ASSIGN_TIME = "{assign_time}"
-            WHERE COURIER_ID = {courier_id}""")
-        cursor.execute(f"""
-            UPDATE ORDERS
-            SET COURIER_ID = {courier_id}
-            WHERE ORDER_ID IN ({str(new_orders_ids)[1:-1]})""")
+        c.execute(f"""UPDATE couriers
+                      SET orders_assigned_at = "{assign_time}"
+                      WHERE id = {courier_id}""")
+        c.execute(f"""UPDATE orders
+                      SET courier_id = {courier_id}
+                      WHERE id IN ({str(new_orders_ids)[1:-1]})""")
         conn.commit()
 
     if assigned_orders == []:
@@ -313,39 +313,31 @@ def mark_order_as_completed():
     order_id = request.json["order_id"]
     complete_time = request.json["complete_time"]
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT *
-        FROM ORDERS
-        WHERE
-            ORDER_ID = {order_id}
-            AND COURIER_ID = {courier_id}""")
-    if cursor.fetchone() is None:
+    c = conn.cursor()
+    c.execute(f"""SELECT id
+                  FROM orders
+                  WHERE id = {order_id} AND courier_id = {courier_id}""")
+    if c.fetchone() is None:
         abort(400)
-    cursor.execute(f"""
-        SELECT COURIER_TYPE, ASSIGN_TIME, LAST_COMPLETE_TIME
-        FROM COURIERS
-        WHERE COURIER_ID = {courier_id}""")
-    courier_type, assign_time, last_complete_time = cursor.fetchone()
-    if last_complete_time is None:
-        last_complete_time = assign_time
+    c.execute(f"""SELECT type, orders_assigned_at, last_order_completed_at
+                  FROM couriers
+                  WHERE id = {courier_id}""")
+    courier_type, assign_time, last_order_completed_at = c.fetchone()
+    if last_order_completed_at is None:
+        last_order_completed_at = assign_time
     time_spent = int(parser.parse(request.json["complete_time"]).timestamp() -
                      max(parser.parse(assign_time).timestamp(),
-                         parser.parse(last_complete_time).timestamp()))
+                         parser.parse(last_order_completed_at).timestamp()))
     coefficient = COURIER_TYPES_COEFFICIENT[courier_type]
-    cursor.execute(f"""
-        UPDATE
-            ORDERS
-        SET
-            COMPLETE_TIME = "{complete_time}",
-            TIME_SPENT = {time_spent},
-            COEFFICIENT =  {coefficient}
-        WHERE
-            ORDER_ID = {order_id}""")
-    cursor.execute(f"""
-        UPDATE COURIERS
-        SET LAST_COMPLETE_TIME = "{complete_time}"
-        WHERE COURIER_ID = {courier_id}""")
+    c.execute(f"""UPDATE orders
+                  SET
+                    completed_at = "{complete_time}",
+                    time_spent = {time_spent},
+                    coefficient =  {coefficient}
+                  WHERE id = {order_id}""")
+    c.execute(f"""UPDATE couriers
+                  SET last_order_completed_at = "{complete_time}"
+                  WHERE id = {courier_id}""")
     conn.commit()
     conn.close()
 
@@ -353,71 +345,70 @@ def mark_order_as_completed():
 
 
 @app.route('/couriers/<int:courier_id>', methods=['GET'])
-def get_courier(courier_id):
-    courier = get_courier_info(courier_id)
+def get_courier_info(courier_id):
+    courier = get_courier_dictionary(courier_id)
     if not courier:
         abort(404)
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT TIME_SPENT, REGION, COEFFICIENT
-        FROM ORDERS
-        WHERE COURIER_ID = {courier_id} AND COMPLETE_TIME NOT NULL
-                   """)
-    results = cursor.fetchall()
+    c = conn.cursor()
+    c.execute(f"""SELECT time_spent, region, coefficient
+                  FROM orders
+                  WHERE courier_id = {courier_id} AND completed_at NOT NULL""")
+    results = c.fetchall()
     if len(results) > 0:
         courier["earnings"] = 0
-        time_spent_per_region = {}
+        spent_per_region = {}
         for row in results:
             time_spent, region, coefficient = row
             courier["earnings"] += 500 * coefficient
-            if region not in time_spent_per_region:
-                time_spent_per_region[region] = []
-            time_spent_per_region[region].append(time_spent)
-        t = min(sum(value) / len(value) for value in time_spent_per_region.values())
-        courier["rating"] = (60 * 60 - min(t, 60 * 60)) / (60 * 60) * 5
+            if region not in spent_per_region:
+                spent_per_region[region] = []
+            spent_per_region[region].append(time_spent)
+        t = min(sum(x) / len(x) for x in spent_per_region.values())
+        rating = (60 * 60 - min(t, 60 * 60)) / (60 * 60) * 5
+        courier["rating"] = round(rating, 2)
     conn.close()
     return jsonify(courier)
 
 
 def check_database():
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    c = conn.cursor()
 
     try:
-        cursor.execute("SELECT COURIER_ID FROM COURIERS")
+        c.execute("SELECT id FROM couriers")
         conn.close()
         return
     except sqlite3.OperationalError:
         pass
 
-    cursor.execute('''CREATE TABLE COURIERS (
-                        COURIER_ID INT PRIMARY KEY NOT NULL,
-                        COURIER_TYPE CHAR(4) NOT NULL,
-                        ASSIGN_TIME DATETIME,
-                        LAST_COMPLETE_TIME DATETIME
-                    );''')
-    cursor.execute('''CREATE TABLE REGIONS (
-                        COURIER_ID INT NOT NULL,
-                        REGION INT NOT NULL
-                    );''')
-    cursor.execute('''CREATE TABLE WORKING_HOURS (
-                        COURIER_ID INT NOT NULL,
-                        HOURS CHAR(11) NOT NULL
-                    );''')
-    cursor.execute('''CREATE TABLE ORDERS (
-                        ORDER_ID INT PRIMARY KEY NOT NULL,
-                        WEIGHT FLOAT(2) NOT NULL,
-                        REGION INT NOT NULL,
-                        COURIER_ID INT,
-                        COMPLETE_TIME DATETIME,
-                        TIME_SPENT INT,
-                        COEFFICIENT INT
-                    );''')
-    cursor.execute('''CREATE TABLE DELIVERY_HOURS (
-                        ORDER_ID INT NOT NULL,
-                        HOURS CHAR(11) NOT NULL
-                    );''')
+    c.execute("""CREATE TABLE couriers (
+                   id INT PRIMARY KEY NOT NULL,
+                   type CHAR(4) NOT NULL,
+                   orders_assigned_at DATETIME,
+                   last_order_completed_at DATETIME
+                 );""")
+    c.execute("""CREATE TABLE regions (
+                   courier_id INT NOT NULL,
+                   region INT NOT NULL
+                 );""")
+    c.execute("""CREATE TABLE working_hours (
+                   courier_id INT NOT NULL,
+                   interval CHAR(11) NOT NULL
+                 );""")
+    c.execute("""CREATE TABLE orders (
+                   id INT PRIMARY KEY NOT NULL,
+                   weight FLOAT(2) NOT NULL,
+                   region INT NOT NULL,
+                   courier_id INT,
+                   completed_at DATETIME,
+                   time_spent INT,
+                   coefficient INT
+                 );""")
+    c.execute("""CREATE TABLE delivery_hours (
+                   order_id INT NOT NULL,
+                   interval CHAR(11) NOT NULL
+                 );""")
     conn.close()
 
 
