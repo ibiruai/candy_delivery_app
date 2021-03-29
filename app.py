@@ -387,15 +387,15 @@ def check_database():
                    type CHAR(4) NOT NULL,
                    orders_assigned_at DATETIME,
                    last_order_completed_at DATETIME
-                 );""")
+                 )""")
     c.execute("""CREATE TABLE regions (
                    courier_id INT NOT NULL,
                    region INT NOT NULL
-                 );""")
+                 )""")
     c.execute("""CREATE TABLE working_hours (
                    courier_id INT NOT NULL,
                    interval CHAR(11) NOT NULL
-                 );""")
+                 )""")
     c.execute("""CREATE TABLE orders (
                    id INT PRIMARY KEY NOT NULL,
                    weight FLOAT(2) NOT NULL,
@@ -404,11 +404,12 @@ def check_database():
                    completed_at DATETIME,
                    time_spent INT,
                    coefficient INT
-                 );""")
+                 )""")
     c.execute("""CREATE TABLE delivery_hours (
                    order_id INT NOT NULL,
                    interval CHAR(11) NOT NULL
-                 );""")
+                 )""")
+    c.execute("PRAGMA journal_mode=WAL")
     conn.close()
 
 
