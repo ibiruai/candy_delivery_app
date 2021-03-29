@@ -257,7 +257,9 @@ def assign_orders():
 
     c.execute(f"""SELECT id, weight
                   FROM orders
-                  WHERE courier_id = {courier_id}""")
+                  WHERE
+                    courier_id = {courier_id}
+                    AND completed_at is NULL""")
     for row in c.fetchall():
         order_id, weight = row
         assigned_orders.append({"id": order_id})
