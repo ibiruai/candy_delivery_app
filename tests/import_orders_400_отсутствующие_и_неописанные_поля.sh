@@ -1,4 +1,4 @@
-curl -i http://127.0.0.1:5000/orders \
+curl -i http://`cat address`/orders \
   --request POST \
   --header "Content-Type: application/json" \
   --data '{
